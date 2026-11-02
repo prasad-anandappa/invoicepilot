@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InvoicePilot — the agent that gets you paid</title>
+<style>
+  :root{
+    --ink:#0b1f3a; --muted:#5b6b7c; --line:#e3e9f0; --bg:#f5f7fa;
+    --paypal:#0070ba; --paypal-dark:#003087; --ok:#0a7d43; --warn:#b45309;
+    --bad:#b3261e; --card:#ffffff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       background:var(--bg);color:var(--ink)}
+  header{background:linear-gradient(120deg,var(--paypal-dark),var(--paypal));
+         color:#fff;padding:22px 20px}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 16px}
+  header .wrap{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .logo{font-size:26px;font-weight:800;letter-spacing:-.3px}
+  .logo span{opacity:.75;font-weight:600}
+  .tagline{width:100%;opacity:.85;font-size:14px;margin-top:2px}
+  .badge{background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.35);
+         padding:4px 10px;border-radius:999px;font-size:12px;font-weight:600}
+  main .wrap{display:grid;grid-template-columns:400px 1fr;gap:18px;padding:20px 16px 40px}
+  @media (max-width:900px){main .wrap{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:18px;box-shadow:0 2px 10px rgba(11,31,58,.04)}
+  .card h2{margin:0 0 10px;font-size:16px}
+  textarea{width:100%;min-height:92px;border:1px solid var(--line);border-radius:10px;
+           padding:12px;font:inherit;resize:vertical}
+  .primary{background:var(--paypal);color:#fff;border:0;border-radius:10px;
+           padding:12px 16px;font-weight:700;cursor:pointer;width:100%;margin-top:10px}
+  .primary:hover{background:#005ea6}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:999px;
+        padding:5px 10px;font-size:12px;cursor:pointer;color:var(--muted)}
+  .chip:hover{border-color:var(--paypal);color:var(--paypal)}
+  .steps{list-style:none;margin:12px 0 0;padding:0;max-height:300px;overflow:auto}
+  .steps li{padding:9px 10px;border-left:3px solid var(--paypal);
+            background:#f0f6fc;border-radius:0 8px 8px 0;margin-bottom:8px;font-size:13px}
+  .steps .tool{font-weight:700;color:var(--paypal-dark);font-size:11px;
+               text-transform:uppercase;letter-spacing:.4px}
+  .steps .detail{color:var(--muted)}
+  .inv{border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:12px}
+  .inv-head{display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap}
+  .inv-title{font-weight:700}
+  .inv-num{color:var(--muted);font-size:12px;font-weight:600}
+  .pill{font-size:11px;font-weight:800;padding:3px 9px;border-radius:999px;letter-spacing:.4px}
+  .pill.SENT{background:#e0efff;color:#005ea6}
+  .pill.DRAFT{background:#eef1f4;color:#5b6b7c}
+  .pill.PAID{background:#dff5e8;color:var(--ok)}
+  .pill.OVERDUE{background:#fde8e5;color:var(--bad)}
+  .amounts{font-size:13px;color:var(--muted);margin:6px 0}
+  .amounts b{color:var(--ink);font-size:16px}
+  .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:8px;
+       padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}
+  .btn:hover{border-color:var(--paypal);color:var(--paypal)}
+  .btn.pay{background:var(--paypal);color:#fff;border-color:var(--paypal)}
+  .btn.pay:hover{background:#005ea6}
+  .timeline{list-style:none;margin:10px 0 0;padding:0 0 0 14px;border-left:2px solid var(--line)}
+  .timeline li{font-size:12.5px;color:var(--muted);padding:3px 0 3px 6px;position:relative}
+  .timeline li::before{content:"";position:absolute;left:-19.5px;top:8px;width:8px;height:8px;
+                       border-radius:50%;background:var(--paypal)}
+  .reminder-msg{background:#fff8e6;border:1px solid #f3dfae;border-radius:8px;
+                padding:10px;font-size:13px;margin-top:10px;white-space:pre-wrap}
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+  .stat{background:#f0f6fc;border-radius:10px;padding:12px;text-align:center}
+  .stat .v{font-size:20px;font-weight:800}
+  .stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+  .empty{color:var(--muted);font-size:14px;padding:8px 0}
+  .paidflash{background:#dff5e8;border:1px solid #9fd8b8;color:var(--ok);
+             border-radius:10px;padding:10px 14px;margin:16px auto 0;max-width:1180px;
+             width:calc(100% - 32px);font-weight:600;display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="logo">🧾 InvoicePilot <span>· agentic invoicing</span></div>
+    <span class="badge" id="modeBadge">PayPal: …</span>
+    <span class="badge" id="llmBadge">AI: …</span>
+    <div class="tagline">Describe the work in plain words. The agent invoices, sends a PayPal payment link, chases late payers and reconciles — on its own.</div>
+  </div>
+</header>
+
+<div class="paidflash" id="paidFlash"></div>
+
+<main>
+  <div class="wrap">
+    <section>
+      <div class="card">
+        <h2>1 · Describe the work</h2>
+        <textarea id="jobText" placeholder="e.g. Logo design for Maria's bakery, $450, due Friday"></textarea>
+        <button class="primary" id="runBtn">Let the agent run it →</button>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="card" style="margin-top:18px">
+        <h2>Agent activity</h2>
+        <ul class="steps" id="steps"><li><span class="tool">ready</span><br>Waiting for a job…</li></ul>
+      </div>
+      <div class="card" style="margin-top:18px">
+        <h2>Reconciliation</h2>
+        <div class="stats">
+          <div class="stat"><div class="v" id="stInvoiced">$0</div><div class="k">Invoiced</div></div>
+          <div class="stat"><div class="v" id="stPaid">$0</div><div class="k">Collected</div></div>
+          <div class="stat"><div class="v" id="stOut">$0</div><div class="k">Outstanding</div></div>
+          <div class="stat"><div class="v" id="stOver">$0</div><div class="k">Overdue</div></div>
+        </div>
+        <p class="empty" id="reconSummary"></p>
+        <button class="btn" id="reconBtn">↻ Reconcile now</button>
+      </div>
+    </section>
+
+    <section>
+      <div class="card">
+        <h2>2 · Invoices the agent is running</h2>
+        <div id="invoices"><p class="empty">No invoices yet — describe a job and the agent will create the first one.</p></div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const examples = [
+  "Logo design for Maria's bakery, $450, due Friday",
+  "Wedding photography for the Chen family, $1200 plus 8% tax, due in 3 days",
+  "Landing page build for FitWithRaj studio, $750, due Nov 20",
+  "Birthday cake order for Priya, $85, due yesterday"
+];
+const chips = $('#chips');
+examples.forEach(t => {
+  const c = document.createElement('button');
+  c.className = 'chip'; c.textContent = t;
+  c.onclick = () => { $('#jobText').value = t; };
+  chips.appendChild(c);
+});
+
+function addSteps(steps){
+  const ul = $('#steps');
+  if (ul.dataset.fresh !== '1'){ ul.innerHTML=''; ul.dataset.fresh='1'; }
+  (steps||[]).forEach(s => {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="tool"></span><br><span class="sum"></span>' +
+      (s.detail ? '<br><span class="detail"></span>' : '');
+    li.querySelector('.tool').textContent = s.tool;
+    li.querySelector('.sum').textContent = s.summary;
+    if (s.detail) li.querySelector('.detail').textContent = s.detail;
+    ul.prepend(li);
+  });
+}
+
+function pill(st){ return '<span class="pill ' + st + '">' + st + '</span>'; }
+
+function invoiceCard(inv){
+  const div = document.createElement('div');
+  div.className = 'inv';
+  const tl = inv.timeline.map(e =>
+    '<li>' + escapeHtml(e.message) + '</li>').join('');
+  const lastReminder = inv.reminders.length
+    ? '<div class="reminder-msg">✉️ ' + escapeHtml(inv.reminders[inv.reminders.length-1].message) + '</div>' : '';
+  div.innerHTML =
+    '<div class="inv-head"><div><span class="inv-title"></span> ' +
+    '<span class="inv-num">' + inv.number + '</span></div>' + pill(inv.status) + '</div>' +
+    '<div class="amounts">Subtotal $' + inv.subtotal +
+      (inv.tax_rate !== '0' ? ' + tax $' + inv.tax_amount + ' (' + inv.tax_rate + '%)' : '') +
+      ' · Total <b>$' + inv.total + '</b> · Due ' + inv.due_date + '</div>' +
+    '<div class="actions">' +
+      (inv.pay_link ? '<a class="btn pay" href="' + inv.pay_link + '" target="_blank" rel="noopener">Pay with PayPal</a>' : '') +
+      '<button class="btn" data-act="check">Check status</button>' +
+      '<button class="btn" data-act="remind">Send reminder</button>' +
+    '</div>' +
+    '<ul class="timeline">' + tl + '</ul>' + lastReminder;
+  div.querySelector('.inv-title').textContent = inv.description + ' — ' + inv.client_name;
+  div.querySelectorAll('button[data-act]').forEach(b => {
+    b.onclick = () => act(inv.id, b.dataset.act);
+  });
+  return div;
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g, c => ({
+    '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function refresh(){
+  const r = await fetch('/api/invoices');
+  const data = await r.json();
+  const box = $('#invoices');
+  box.innerHTML = '';
+  if (!data.invoices.length){
+    box.innerHTML = '<p class="empty">No invoices yet — describe a job and the agent will create the first one.</p>';
+  }
+  data.invoices.slice().reverse().forEach(inv => box.appendChild(invoiceCard(inv)));
+  await reconcile(false);
+}
+
+async function reconcile(showSteps = true){
+  const r = await fetch('/api/reconcile');
+  const d = await r.json();
+  $('#stInvoiced').textContent = '$' + d.total_invoiced;
+  $('#stPaid').textContent = '$' + d.total_paid;
+  $('#stOut').textContent = '$' + d.total_outstanding;
+  $('#stOver').textContent = '$' + d.total_overdue;
+  $('#reconSummary').textContent = d.summary;
+  if (showSteps) addSteps([{tool:'reconcile', summary:d.summary,
+    detail: d.overdue_count ? 'Overdue: ' + d.overdue.map(o => o.number).join(', ') : 'Nothing overdue'}]);
+}
+
+async function act(id, action){
+  const url = action === 'check' ? '/api/invoices/' + id + '/check-status'
+                                 : '/api/invoices/' + id + '/remind';
+  const r = await fetch(url, {method:'POST'});
+  const d = await r.json();
+  addSteps(d.steps);
+  await refresh();
+}
+
+$('#runBtn').onclick = async () => {
+  const text = $('#jobText').value.trim();
+  if (!text) return;
+  $('#runBtn').disabled = true; $('#runBtn').textContent = 'Agent working…';
+  try {
+    const r = await fetch('/api/invoices/from-text', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({text})
+    });
+    const d = await r.json();
+    if (!r.ok){ alert(d.detail || 'Something went wrong'); return; }
+    addSteps(d.steps);
+    await refresh();
+  } finally {
+    $('#runBtn').disabled = false; $('#runBtn').textContent = 'Let the agent run it →';
+  }
+};
+$('#reconBtn').onclick = () => reconcile(true);
+
+(async () => {
+  const h = await (await fetch('/api/health')).json();
+  $('#modeBadge').textContent = h.paypal_mode === 'mock'
+    ? 'PayPal sandbox · MOCK mode (no real money)' : 'PayPal ' + h.paypal_config + ' · LIVE API';
+  $('#llmBadge').textContent = 'AI: ' + h.llm;
+  const params = new URLSearchParams(location.search);
+  if (params.get('paid')){
+    const f = $('#paidFlash');
+    f.style.display = 'block';
+    f.textContent = '✅ Payment confirmed for ' + params.get('paid') +
+      ' — the agent has marked it PAID. Check the reconciliation panel.';
+  }
+  await refresh();
+})();
+</script>
+</body>
+</html>
