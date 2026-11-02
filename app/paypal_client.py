@@ -5,10 +5,16 @@ PAYPAL_CLIENT_SECRET set, orders are created against the PayPal Sandbox
 Orders v2 API. Without them, MockPayPalClient simulates the exact same
 response shapes deterministically, so the demo and tests run end-to-end
 with no credentials and no real money.
+
+Order lifecycle (both clients): CREATED -> APPROVED (buyer approved on
+the PayPal checkout) -> COMPLETED (merchant captures). An order is only
+money-in-hand once it is COMPLETED, so the agent captures APPROVED
+orders before marking an invoice PAID.
 """
 from __future__ import annotations
 
 import itertools
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -17,10 +23,14 @@ from .config import Settings
 from .models import Invoice, fmt
 
 
+class PayPalClientError(Exception):
+    """A PayPal-layer failure the caller can surface cleanly (no 500s)."""
+
+
 @dataclass
 class PayPalOrder:
     order_id: str
-    status: str  # CREATED | APPROVED | COMPLETED
+    status: str  # CREATED | APPROVED | COMPLETED | VOIDED
     approve_link: str
 
 
@@ -32,6 +42,12 @@ class MockPayPalClient:
     def __init__(self) -> None:
         self._seq = itertools.count(1)
         self._orders: dict[str, dict] = {}
+
+    def _lookup(self, order_id: str) -> dict:
+        try:
+            return self._orders[order_id]
+        except KeyError:
+            raise PayPalClientError(f"unknown order {order_id}") from None
 
     def create_order(self, invoice: Invoice) -> PayPalOrder:
         n = next(self._seq)
@@ -46,7 +62,7 @@ class MockPayPalClient:
         return PayPalOrder(order_id=order_id, status="CREATED", approve_link=link)
 
     def get_order(self, order_id: str) -> PayPalOrder:
-        order = self._orders[order_id]
+        order = self._lookup(order_id)
         return PayPalOrder(
             order_id=order_id,
             status=order["status"],
@@ -54,8 +70,24 @@ class MockPayPalClient:
         )
 
     def simulate_payment(self, order_id: str) -> PayPalOrder:
-        """Demo-only: the buyer 'pays' on the mock checkout page."""
-        order = self._orders[order_id]
+        """Demo-only: the buyer approves on the mock checkout page.
+
+        Mirrors the real flow: approving is not settling. The order sits
+        at APPROVED until the agent captures it (see capture_order).
+        """
+        order = self._lookup(order_id)
+        if order["status"] == "CREATED":
+            order["status"] = "APPROVED"
+        return self.get_order(order_id)
+
+    def capture_order(self, order_id: str) -> PayPalOrder:
+        order = self._lookup(order_id)
+        if order["status"] == "COMPLETED":
+            return self.get_order(order_id)  # capture is idempotent
+        if order["status"] != "APPROVED":
+            raise PayPalClientError(
+                f"order {order_id} is {order['status']} and cannot be captured"
+            )
         order["status"] = "COMPLETED"
         return self.get_order(order_id)
 
@@ -68,9 +100,10 @@ class SandboxPayPalClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._token: str | None = None
+        self._token_expires_at: float = 0.0
 
     def _access_token(self) -> str:
-        if self._token:
+        if self._token and time.monotonic() < self._token_expires_at:
             return self._token
         resp = httpx.post(
             f"{self._settings.paypal_base_url}/v1/oauth2/token",
@@ -79,7 +112,12 @@ class SandboxPayPalClient:
             timeout=30.0,
         )
         resp.raise_for_status()
-        self._token = resp.json()["access_token"]
+        data = resp.json()
+        self._token = data["access_token"]
+        # Refresh a minute early so a token never dies mid-flow.
+        self._token_expires_at = time.monotonic() + max(
+            60, int(data.get("expires_in", 32400)) - 60
+        )
         return self._token
 
     def _headers(self) -> dict:
@@ -143,6 +181,30 @@ class SandboxPayPalClient:
             "",
         )
         return PayPalOrder(order_id=data["id"], status=data["status"], approve_link=link)
+
+    def capture_order(self, order_id: str) -> PayPalOrder:
+        try:
+            resp = httpx.post(
+                f"{self._settings.paypal_base_url}/v2/checkout/orders/"
+                f"{order_id}/capture",
+                headers=self._headers(),
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            # Re-capturing an already-captured order is not a failure —
+            # read the order back and report its real state.
+            if exc.response.status_code == 422:
+                return self.get_order(order_id)
+            raise
+        data = resp.json()
+        link = next(
+            (l["href"] for l in data.get("links", []) if l.get("rel") == "approve"),
+            "",
+        )
+        return PayPalOrder(
+            order_id=data["id"], status=data["status"], approve_link=link
+        )
 
     def simulate_payment(self, order_id: str) -> PayPalOrder:
         raise RuntimeError(

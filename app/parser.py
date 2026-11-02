@@ -8,7 +8,6 @@ Two layers:
 """
 from __future__ import annotations
 
-import calendar as _calendar
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -50,9 +49,9 @@ class ParsedInvoice:
 
 
 _AMOUNT_PATTERNS = [
-    re.compile(r"\$\s?([\d,]+(?:\.\d{1,2})?)"),
-    re.compile(r"\bUSD\s?([\d,]+(?:\.\d{1,2})?)", re.IGNORECASE),
-    re.compile(r"\b([\d,]+(?:\.\d{1,2})?)\s?(?:dollars|bucks|USD)\b", re.IGNORECASE),
+    re.compile(r"\$\s?([\d,]+(?:\.\d+)?)"),
+    re.compile(r"\bUSD\s?([\d,]+(?:\.\d+)?)", re.IGNORECASE),
+    re.compile(r"\b([\d,]+(?:\.\d+)?)\s?(?:dollars|bucks|USD)\b", re.IGNORECASE),
 ]
 _TAX_RE = re.compile(r"(?:plus\s+)?(\d+(?:\.\d+)?)\s?%\s*tax", re.IGNORECASE)
 _IN_DAYS_RE = re.compile(r"\bin\s+(\d+)\s+days?\b", re.IGNORECASE)
@@ -91,11 +90,14 @@ def _parse_due(text: str, today: date) -> tuple[date | None, str]:
     if m:
         month = MONTHS[m.group(1).lower()]
         day = int(m.group(2))
-        year = today.year
-        d = date(year, month, min(day, _calendar.monthrange(year, month)[1]))
-        if (today - d).days > 30:  # clearly meant the next occurrence
-            d = date(year + 1, month, min(day, _calendar.monthrange(year + 1, month)[1]))
-        return d, (text[: m.start()] + text[m.end():]).strip()
+        try:
+            d = date(today.year, month, day)
+        except ValueError:
+            d = None  # e.g. "Feb 30" — not a real date; keep looking
+        if d is not None:
+            if (today - d).days > 30:  # clearly meant the next occurrence
+                d = date(today.year + 1, month, day)
+            return d, (text[: m.start()] + text[m.end():]).strip()
 
     m = _SLASH_DATE_RE.search(text)
     if m:
@@ -156,6 +158,11 @@ def parse_invoice_text(text: str, today: date | None = None) -> ParsedInvoice:
     m = _TAX_RE.search(working)
     if m:
         tax_rate = Decimal(m.group(1))
+        if tax_rate > 100:
+            raise ValueError(
+                f"Tax rate of {tax_rate}% doesn't look right — "
+                "it can't exceed 100%"
+            )
         working = (working[: m.start()] + working[m.end():]).strip(" ,")
 
     # --- amount
@@ -170,6 +177,8 @@ def parse_invoice_text(text: str, today: date | None = None) -> ParsedInvoice:
         raise ValueError(
             "No amount found — include one like $450 or 450 dollars"
         )
+    if amount <= 0:
+        raise ValueError("Invoice amount must be greater than zero")
 
     # --- description / client: "<work> for <client>"
     working = re.sub(r"\s+", " ", working).strip(" ,")

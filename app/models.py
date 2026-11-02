@@ -49,6 +49,18 @@ class Invoice:
     reminders: list[dict] = field(default_factory=list)
     source_text: str = ""
 
+    def __post_init__(self) -> None:
+        # Domain invariants — an invoice that violates these can never be
+        # created, no matter which entry point built it.
+        if self.subtotal <= 0:
+            raise ValueError("Invoice amount must be greater than zero")
+        if not (Decimal("0") <= self.tax_rate <= Decimal("100")):
+            raise ValueError("Tax rate must be between 0% and 100%")
+        if not self.client_name.strip():
+            raise ValueError("Client name must not be empty")
+        if not self.description.strip():
+            raise ValueError("Description must not be empty")
+
     @property
     def tax_amount(self) -> Decimal:
         return money(self.subtotal * self.tax_rate / Decimal("100"))

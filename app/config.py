@@ -36,10 +36,15 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    mode = os.environ.get("PAYPAL_MODE", "sandbox").strip().lower()
+    if mode not in ("sandbox", "live"):
+        raise ValueError(
+            f"PAYPAL_MODE must be 'sandbox' or 'live', got {mode!r}"
+        )
     return Settings(
         paypal_client_id=os.environ.get("PAYPAL_CLIENT_ID", "").strip(),
         paypal_client_secret=os.environ.get("PAYPAL_CLIENT_SECRET", "").strip(),
-        paypal_mode=os.environ.get("PAYPAL_MODE", "sandbox").strip().lower(),
+        paypal_mode=mode,
         llm_api_key=os.environ.get("INVOICEPILOT_LLM_API_KEY", "").strip(),
         llm_base_url=os.environ.get(
             "INVOICEPILOT_LLM_BASE_URL", "https://api.openai.com/v1"

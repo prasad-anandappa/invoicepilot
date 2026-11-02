@@ -49,11 +49,20 @@ def parse_with_llm(text: str, settings: Settings) -> ParsedInvoice | None:
         content = resp.json()["choices"][0]["message"]["content"]
         data = json.loads(content)
         due = data.get("due_date")
+        # LLM output is untrusted input: validate every field before it
+        # can become an invoice. Anything off -> None -> rule-based
+        # fallback, never a bad invoice.
+        description = str(data["description"]).strip()[:500]
+        amount = Decimal(str(data["amount"]))
+        tax_rate = Decimal(str(data.get("tax_rate_percent") or 0))
+        if not description or amount <= 0 or not (0 <= tax_rate <= 100):
+            return None
         return ParsedInvoice(
-            description=str(data["description"]),
-            client_name=str(data.get("client_name") or "Client"),
-            amount=Decimal(str(data["amount"])),
-            tax_rate=Decimal(str(data.get("tax_rate_percent") or 0)),
+            description=description,
+            client_name=str(data.get("client_name") or "Client").strip()[:200]
+            or "Client",
+            amount=amount,
+            tax_rate=tax_rate,
             due_date=date.fromisoformat(due) if due else None,
         )
     except (httpx.HTTPError, KeyError, ValueError, InvalidOperation, TypeError):

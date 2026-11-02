@@ -5,17 +5,20 @@ Open: http://localhost:8000
 """
 from __future__ import annotations
 
+import html
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .agent import InvoicePilotAgent
 from .config import load_settings
-from .paypal_client import MockPayPalClient, build_paypal_client
+from .paypal_client import MockPayPalClient, PayPalClientError, build_paypal_client
 from .store import InvoiceStore
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -30,15 +33,44 @@ app = FastAPI(title="InvoicePilot", version="1.0.0")
 
 
 class FromTextRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=2000)
 
 
 class StructuredInvoiceRequest(BaseModel):
-    description: str
-    client_name: str
-    amount: Decimal
-    tax_rate: Decimal = Decimal("0")
+    description: str = Field(min_length=1, max_length=500)
+    client_name: str = Field(min_length=1, max_length=200)
+    amount: Decimal = Field(gt=0, le=10_000_000)
+    tax_rate: Decimal = Field(default=Decimal("0"), ge=0, le=100)
     due_date: date | None = None
+
+
+IdempotencyKey = Annotated[str | None, Header(alias="Idempotency-Key")]
+
+
+def _replay(key: str | None) -> dict | None:
+    """If this Idempotency-Key was seen before, return the stored result.
+
+    A retried or double-clicked create must never mint a second invoice
+    (or a second PayPal order) for the same request.
+    """
+    if not key:
+        return None
+    existing = store.by_idempotency_key(key)
+    if existing is None:
+        return None
+    return {
+        "invoice": existing.to_dict(),
+        "steps": [
+            {
+                "tool": "idempotency",
+                "summary": (
+                    f"Duplicate request ignored — {existing.number} "
+                    "was already created for this key"
+                ),
+                "detail": "",
+            }
+        ],
+    }
 
 
 @app.get("/api/health")
@@ -52,24 +84,49 @@ def health() -> dict:
 
 
 @app.post("/api/invoices/from-text")
-def invoice_from_text(req: FromTextRequest) -> dict:
+def invoice_from_text(
+    req: FromTextRequest, idempotency_key: IdempotencyKey = None
+) -> dict:
+    replay = _replay(idempotency_key)
+    if replay is not None:
+        return replay
     try:
         invoice, steps = agent.run_from_text(req.text)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"PayPal request failed: {exc}"
+        ) from exc
+    if idempotency_key:
+        store.remember_idempotency_key(idempotency_key, invoice)
     return {"invoice": invoice.to_dict(), "steps": steps}
 
 
 @app.post("/api/invoices")
-def invoice_structured(req: StructuredInvoiceRequest) -> dict:
-    invoice = agent.create_invoice_structured(
-        description=req.description,
-        client_name=req.client_name,
-        amount=req.amount,
-        tax_rate=req.tax_rate,
-        due_date=req.due_date,
-    )
-    steps = agent.create_paypal_order(invoice)
+def invoice_structured(
+    req: StructuredInvoiceRequest, idempotency_key: IdempotencyKey = None
+) -> dict:
+    replay = _replay(idempotency_key)
+    if replay is not None:
+        return replay
+    try:
+        invoice = agent.create_invoice_structured(
+            description=req.description,
+            client_name=req.client_name,
+            amount=req.amount,
+            tax_rate=req.tax_rate,
+            due_date=req.due_date,
+        )
+        steps = agent.create_paypal_order(invoice)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"PayPal request failed: {exc}"
+        ) from exc
+    if idempotency_key:
+        store.remember_idempotency_key(idempotency_key, invoice)
     return {"invoice": invoice.to_dict(), "steps": steps}
 
 
@@ -120,7 +177,10 @@ def simulate_pay(invoice_id: str) -> dict:
         raise HTTPException(status_code=404, detail="invoice not found") from None
     if not invoice.paypal_order_id:
         raise HTTPException(status_code=400, detail="invoice has no PayPal order")
-    paypal.simulate_payment(invoice.paypal_order_id)
+    try:
+        paypal.simulate_payment(invoice.paypal_order_id)
+    except PayPalClientError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     steps = agent.check_status(invoice)
     return {"invoice": invoice.to_dict(), "steps": steps}
 
@@ -136,6 +196,8 @@ def mock_pay_page(order_id: str) -> str:
     invoice = store.by_order(order_id)
     if invoice is None:
         raise HTTPException(status_code=404, detail="order not found")
+    # Everything user-supplied is escaped before it lands in HTML.
+    esc = html.escape
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -158,10 +220,10 @@ def mock_pay_page(order_id: str) -> str:
 <div class="card">
   <div class="brand">Pay<span>Pal</span></div>
   <p class="muted">Simulated sandbox checkout — no real money moves</p>
-  <div class="amt">${invoice.total} {invoice.currency}</div>
-  <p class="muted">{invoice.description}<br>Invoice {invoice.number} · for {invoice.client_name}</p>
+  <div class="amt">${invoice.total} {esc(invoice.currency)}</div>
+  <p class="muted">{esc(invoice.description)}<br>Invoice {esc(invoice.number)} · for {esc(invoice.client_name)}</p>
   <button id="pay">Pay now</button>
-  <p class="note">Order {order_id} · InvoicePilot demo</p>
+  <p class="note">Order {esc(order_id)} · InvoicePilot demo</p>
 </div>
 <script>
 document.getElementById('pay').addEventListener('click', async () => {{

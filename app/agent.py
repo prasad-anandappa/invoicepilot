@@ -3,7 +3,7 @@
 One agent, five tools:
   create_invoice   — NL note -> structured invoice (LLM w/ rule-based fallback)
   create_paypal_order — PayPal (sandbox/mock) order + buyer payment link
-  check_status     — poll PayPal for the order state, mark invoices paid
+  check_status     — poll PayPal; capture approved orders; mark invoices paid
   send_reminder    — polite, context-aware overdue reminder
   reconcile        — money-in / money-out summary across all invoices
 
@@ -15,11 +15,13 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import httpx
+
 from .config import Settings
 from .llm import parse_with_llm
 from .models import Invoice, fmt, money
 from .parser import parse_invoice_text
-from .paypal_client import MockPayPalClient
+from .paypal_client import MockPayPalClient, PayPalClientError
 from .store import InvoiceStore
 
 DEFAULT_DUE_DAYS = 7
@@ -135,13 +137,35 @@ class InvoicePilotAgent:
     def check_status(self, invoice: Invoice) -> list[dict]:
         if not invoice.paypal_order_id:
             return [_step("check_status", f"{invoice.number} has no PayPal order yet")]
-        order = self.paypal.get_order(invoice.paypal_order_id)
-        steps = [
-            _step(
-                "check_status",
-                f"PayPal reports order {order.order_id}: {order.status}",
-            )
-        ]
+        try:
+            order = self.paypal.get_order(invoice.paypal_order_id)
+            steps = [
+                _step(
+                    "check_status",
+                    f"PayPal reports order {order.order_id}: {order.status}",
+                )
+            ]
+            if order.status == "APPROVED":
+                # The buyer approved the payment; settling it is the
+                # merchant's move. Capture, then the money is in.
+                order = self.paypal.capture_order(order.order_id)
+                steps.append(
+                    _step(
+                        "check_status",
+                        f"Captured payment for {invoice.number}",
+                        f"Order {order.order_id} now {order.status}",
+                    )
+                )
+        except (PayPalClientError, httpx.HTTPError) as exc:
+            # A flaky PayPal call must never crash the loop — report it
+            # as a step and let the next check try again.
+            return [
+                _step(
+                    "check_status",
+                    f"Could not reach PayPal for {invoice.number}",
+                    str(exc),
+                )
+            ]
         if order.status == "COMPLETED" and invoice.status != "PAID":
             invoice.status = "PAID"
             invoice.paid_at = datetime.now(timezone.utc)
@@ -151,6 +175,14 @@ class InvoicePilotAgent:
             )
             steps.append(
                 _step("check_status", f"{invoice.number} marked PAID", "Receipt confirmed")
+            )
+        elif order.status == "VOIDED":
+            steps.append(
+                _step(
+                    "check_status",
+                    f"Order {order.order_id} was voided",
+                    "A fresh payment link is needed",
+                )
             )
         return steps
 
@@ -163,6 +195,12 @@ class InvoicePilotAgent:
         today = today or date.today()
         status = invoice.effective_status(today)
         days_late = (today - invoice.due_date).days
+        pay_clause = (
+            f" You can pay securely here: {invoice.pay_link} — it takes "
+            "under a minute."
+            if invoice.pay_link
+            else ""
+        )
         if invoice.status == "PAID":
             message = (
                 f"Hi {invoice.client_name} — good news, invoice "
@@ -174,16 +212,15 @@ class InvoicePilotAgent:
                 f"{invoice.number} for ${fmt(invoice.total)} "
                 f"({invoice.description}) was due {invoice.due_date.isoformat()} "
                 f"and is now {days_late} day{'s' if days_late != 1 else ''} "
-                f"overdue. You can pay securely here: {invoice.pay_link or ''} "
-                f"— it takes under a minute. If you've already paid, just "
+                f"overdue.{pay_clause} If you've already paid, just "
                 f"ignore this. Thank you!"
             )
         else:
             message = (
                 f"Hi {invoice.client_name}, a quick heads-up: invoice "
                 f"{invoice.number} for ${fmt(invoice.total)} "
-                f"({invoice.description}) is due {invoice.due_date.isoformat()}. "
-                f"Pay securely here: {invoice.pay_link or ''}. Thank you!"
+                f"({invoice.description}) is due {invoice.due_date.isoformat()}."
+                f"{pay_clause} Thank you!"
             )
         record = {
             "at": datetime.now(timezone.utc).isoformat(),

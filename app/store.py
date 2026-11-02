@@ -12,6 +12,7 @@ class InvoiceStore:
         self._lock = threading.Lock()
         self._seq = itertools.count(1)
         self._invoices: dict[str, Invoice] = {}
+        self._idempotency_keys: dict[str, str] = {}  # key -> invoice id
 
     def next_number(self) -> tuple[str, str]:
         n = next(self._seq)
@@ -21,6 +22,15 @@ class InvoiceStore:
         with self._lock:
             self._invoices[invoice.id] = invoice
         return invoice
+
+    def by_idempotency_key(self, key: str) -> Invoice | None:
+        """Return the invoice a previous request with this key created."""
+        invoice_id = self._idempotency_keys.get(key)
+        return self._invoices.get(invoice_id) if invoice_id else None
+
+    def remember_idempotency_key(self, key: str, invoice: Invoice) -> None:
+        with self._lock:
+            self._idempotency_keys[key] = invoice.id
 
     def get(self, invoice_id: str) -> Invoice:
         return self._invoices[invoice_id]
