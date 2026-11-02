@@ -15,6 +15,7 @@ class Settings:
     paypal_client_id: str = ""
     paypal_client_secret: str = ""
     paypal_mode: str = "sandbox"  # sandbox | live
+    paypal_webhook_id: str = ""  # enables webhook signature verification
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
@@ -45,6 +46,7 @@ def load_settings() -> Settings:
         paypal_client_id=os.environ.get("PAYPAL_CLIENT_ID", "").strip(),
         paypal_client_secret=os.environ.get("PAYPAL_CLIENT_SECRET", "").strip(),
         paypal_mode=mode,
+        paypal_webhook_id=os.environ.get("PAYPAL_WEBHOOK_ID", "").strip(),
         llm_api_key=os.environ.get("INVOICEPILOT_LLM_API_KEY", "").strip(),
         llm_base_url=os.environ.get(
             "INVOICEPILOT_LLM_BASE_URL", "https://api.openai.com/v1"

@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>InvoicePilot — the agent that gets you paid</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.4/dist/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.4/dist/styles/ag-theme-quartz.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@31.3.4/dist/ag-grid-community.min.js"></script>
 <style>
   :root{
     --ink:#0b1f3a; --muted:#5b6b7c; --line:#e3e9f0; --bg:#f5f7fa;
@@ -73,6 +76,18 @@
   .paidflash{background:#dff5e8;border:1px solid #9fd8b8;color:var(--ok);
              border-radius:10px;padding:10px 14px;margin:16px auto 0;max-width:1180px;
              width:calc(100% - 32px);font-weight:600;display:none}
+  .grid-toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px}
+  .grid-toolbar input{flex:1;min-width:180px;border:1px solid var(--line);
+             border-radius:8px;padding:8px 10px;font:inherit}
+  #booksGrid{height:380px;width:100%}
+  .aging{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}
+  .aging .bucket{border:1px solid var(--line);border-radius:10px;padding:8px 12px;
+             font-size:13px;background:#fbfcfe}
+  .aging .bucket b{display:block;font-size:16px}
+  .aging .bucket.late{border-color:#f3b8b2;background:#fdf3f1}
+  .fallback-table{width:100%;border-collapse:collapse;font-size:13px}
+  .fallback-table th,.fallback-table td{border:1px solid var(--line);
+             padding:6px 8px;text-align:left}
 </style>
 </head>
 <body>
@@ -119,6 +134,24 @@
         <div id="invoices"><p class="empty">No invoices yet — describe a job and the agent will create the first one.</p></div>
       </div>
     </section>
+  </div>
+
+  <div class="wrap" style="padding-top:0">
+    <div class="card">
+      <h2>3 · Books &amp; reporting — AG Grid</h2>
+      <p class="empty" style="padding-top:0">Every invoice the agent runs, as a working
+        books table: sort, filter, search and page the grid, export CSV, and watch the
+        aging buckets — the same tiers the agent's reminder escalation uses.</p>
+      <div class="aging" id="agingRow"></div>
+      <div class="grid-toolbar">
+        <input id="gridSearch" type="search" placeholder="Search the books… (client, status, description)">
+        <button class="btn" id="gridCsv">⬇ Export CSV (grid)</button>
+        <a class="btn" href="/api/reports/export.csv" download>⬇ Export CSV (server)</a>
+        <button class="btn" id="gridRefresh">↻ Refresh books</button>
+      </div>
+      <div id="booksGrid" class="ag-theme-quartz"></div>
+      <div id="gridFallback"></div>
+    </div>
   </div>
 </main>
 
@@ -194,6 +227,7 @@ async function refresh(){
     box.innerHTML = '<p class="empty">No invoices yet — describe a job and the agent will create the first one.</p>';
   }
   data.invoices.slice().reverse().forEach(inv => box.appendChild(invoiceCard(inv)));
+  refreshBooks(data.invoices);
   await reconcile(false);
 }
 
@@ -236,6 +270,86 @@ $('#runBtn').onclick = async () => {
   }
 };
 $('#reconBtn').onclick = () => reconcile(true);
+
+/* ---- Books & reporting: AG Grid (community edition) ----
+   Sort / filter / search / pagination / CSV export run in the grid.
+   If the CDN is unreachable (offline demo), gridFallback renders the
+   same rows as a plain table — the books are never hidden. */
+let booksApi = null;
+
+function bookRow(inv){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const due = new Date(inv.due_date + 'T00:00:00');
+  const days = inv.status === 'PAID' ? 0
+    : Math.max(0, Math.round((today - due) / 86400000));
+  return {
+    number: inv.number, client: inv.client_name, description: inv.description,
+    status: inv.status, subtotal: parseFloat(inv.subtotal),
+    tax: parseFloat(inv.tax_amount), total: parseFloat(inv.total),
+    due_date: inv.due_date, days_overdue: days,
+    paid_at: inv.paid_at ? inv.paid_at.slice(0,10) : ''
+  };
+}
+
+function gridFallback(rows){
+  const box = $('#gridFallback');
+  if (!rows.length){ box.innerHTML = '<p class="empty">No rows yet.</p>'; return; }
+  box.innerHTML = '<table class="fallback-table"><thead><tr>' +
+    '<th>Invoice</th><th>Client</th><th>Status</th><th>Total</th><th>Due</th><th>Days overdue</th>' +
+    '</tr></thead><tbody>' + rows.map(r =>
+      '<tr><td>' + escapeHtml(r.number) + '</td><td>' + escapeHtml(r.client) +
+      '</td><td>' + escapeHtml(r.status) + '</td><td>$' + r.total.toFixed(2) +
+      '</td><td>' + escapeHtml(r.due_date) + '</td><td>' + r.days_overdue +
+      '</td></tr>').join('') + '</tbody></table>';
+}
+
+function initBooks(){
+  if (!window.agGrid){ gridFallback([]); return; }
+  const money = p => '$' + Number(p.value || 0).toLocaleString('en-US',
+    {minimumFractionDigits:2, maximumFractionDigits:2});
+  booksApi = agGrid.createGrid($('#booksGrid'), {
+    columnDefs: [
+      {field:'number', headerName:'Invoice', width:110, pinned:'left'},
+      {field:'client', headerName:'Client', filter:'agTextColumnFilter'},
+      {field:'description', headerName:'Description', filter:'agTextColumnFilter', flex:1},
+      {field:'status', headerName:'Status', width:115, filter:'agTextColumnFilter',
+       cellRenderer: p => pill(p.value)},
+      {field:'subtotal', headerName:'Subtotal', type:'numericColumn', valueFormatter: money},
+      {field:'tax', headerName:'Tax', type:'numericColumn', valueFormatter: money},
+      {field:'total', headerName:'Total', type:'numericColumn', valueFormatter: money},
+      {field:'due_date', headerName:'Due', width:115, sort:'asc'},
+      {field:'days_overdue', headerName:'Days overdue', width:125, type:'numericColumn',
+       cellStyle: p => p.value > 0 ? {color:'#b3261e', fontWeight:'700'} : null},
+      {field:'paid_at', headerName:'Paid', width:115}
+    ],
+    defaultColDef: {sortable:true, filter:true, resizable:true},
+    pagination: true, paginationPageSize: 10,
+    animateRows: true, rowData: []
+  });
+  $('#gridSearch').addEventListener('input', e =>
+    booksApi.setQuickFilter(e.target.value));
+  $('#gridCsv').onclick = () =>
+    booksApi.exportDataAsCsv({fileName:'invoicepilot-books.csv'});
+}
+
+async function renderAging(){
+  try {
+    const d = await (await fetch('/api/reports/aging')).json();
+    $('#agingRow').innerHTML = d.buckets.map(b =>
+      '<div class="bucket' + (b.bucket !== 'current' && b.count ? ' late' : '') +
+      '"><b>$' + b.total + '</b>' + b.label + ' · ' + b.count + ' invoice(s)</div>'
+    ).join('');
+  } catch (e) { /* aging is an enhancement; the grid still works */ }
+}
+
+function refreshBooks(invoices){
+  const rows = (invoices || []).map(bookRow);
+  if (booksApi){ booksApi.setRowData(rows); $('#gridFallback').innerHTML=''; }
+  else { gridFallback(rows); }
+  renderAging();
+}
+$('#gridRefresh').onclick = () => refresh();
+initBooks();
 
 (async () => {
   const h = await (await fetch('/api/health')).json();

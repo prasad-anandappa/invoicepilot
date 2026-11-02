@@ -201,12 +201,38 @@ class InvoicePilotAgent:
             if invoice.pay_link
             else ""
         )
+        # Escalation ladder: the longer an invoice is overdue, the
+        # firmer the nudge — always polite, always exact on the facts.
+        # Tiers mirror the aging buckets in reporting.py.
         if invoice.status == "PAID":
+            tone = "settled"
             message = (
                 f"Hi {invoice.client_name} — good news, invoice "
                 f"{invoice.number} is already settled. Thank you!"
             )
+        elif status == "OVERDUE" and days_late >= 31:
+            tone = "final"
+            message = (
+                f"Hi {invoice.client_name}, this is a final notice for "
+                f"invoice {invoice.number} for ${fmt(invoice.total)} "
+                f"({invoice.description}), due {invoice.due_date.isoformat()} "
+                f"and now {days_late} days overdue.{pay_clause} Please pay, "
+                f"or contact us within 7 days so we can resolve this "
+                f"together, before we pause further work and review next "
+                f"steps. Thank you for your attention."
+            )
+        elif status == "OVERDUE" and days_late >= 8:
+            tone = "firm"
+            message = (
+                f"Hi {invoice.client_name}, following up on invoice "
+                f"{invoice.number} for ${fmt(invoice.total)} "
+                f"({invoice.description}), due {invoice.due_date.isoformat()} "
+                f"and now {days_late} days overdue. Please arrange payment "
+                f"this week.{pay_clause} If payment is already on its way, "
+                f"thank you — a quick note with the date helps us reconcile."
+            )
         elif status == "OVERDUE":
+            tone = "gentle"
             message = (
                 f"Hi {invoice.client_name}, a friendly nudge: invoice "
                 f"{invoice.number} for ${fmt(invoice.total)} "
@@ -216,6 +242,7 @@ class InvoicePilotAgent:
                 f"ignore this. Thank you!"
             )
         else:
+            tone = "upcoming"
             message = (
                 f"Hi {invoice.client_name}, a quick heads-up: invoice "
                 f"{invoice.number} for ${fmt(invoice.total)} "
@@ -225,15 +252,20 @@ class InvoicePilotAgent:
         record = {
             "at": datetime.now(timezone.utc).isoformat(),
             "message": message,
+            "tone": tone,
             "channel": "mock-inbox" if isinstance(self.paypal, MockPayPalClient) else "email",
         }
         invoice.reminders.append(record)
-        invoice.add_event("reminder", f"Reminder sent to {invoice.client_name}")
+        invoice.add_event(
+            "reminder",
+            f"Reminder sent to {invoice.client_name} ({tone} tone)",
+        )
         return message, [
             _step(
                 "send_reminder",
                 f"Reminder sent to {invoice.client_name}",
-                "Overdue nudge" if status == "OVERDUE" else "Friendly heads-up",
+                f"Tone: {tone}"
+                + (f" · {days_late} days overdue" if status == "OVERDUE" else ""),
             )
         ]
 

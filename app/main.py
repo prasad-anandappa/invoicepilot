@@ -12,14 +12,21 @@ from pathlib import Path
 from typing import Annotated
 
 import httpx
-from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .agent import InvoicePilotAgent
 from .config import load_settings
-from .paypal_client import MockPayPalClient, PayPalClientError, build_paypal_client
+from .paypal_client import (
+    MockPayPalClient,
+    PayPalClientError,
+    SandboxPayPalClient,
+    build_paypal_client,
+)
+from .reporting import aging_report, client_summary, invoices_csv
 from .store import InvoiceStore
+from .webhooks import PayPalWebhookProcessor
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
@@ -28,6 +35,7 @@ settings = load_settings()
 store = InvoiceStore()
 paypal = build_paypal_client(settings)
 agent = InvoicePilotAgent(settings, store, paypal)
+webhooks = PayPalWebhookProcessor(agent, store)
 
 app = FastAPI(title="InvoicePilot", version="1.0.0")
 
@@ -80,7 +88,78 @@ def health() -> dict:
         "paypal_mode": paypal.name,
         "paypal_config": settings.paypal_mode,
         "llm": "api" if settings.llm_enabled else "rule-based fallback",
+        "webhook_verification": (
+            "enabled"
+            if settings.paypal_webhook_id and isinstance(paypal, SandboxPayPalClient)
+            else "demo-unverified"
+        ),
+        "features": [
+            "ag-grid-reporting",
+            "aging-report",
+            "csv-export",
+            "paypal-webhooks",
+            "reminder-escalation",
+        ],
     }
+
+
+@app.get("/api/reports/aging")
+def report_aging() -> dict:
+    return aging_report(store.all())
+
+
+@app.get("/api/reports/clients")
+def report_clients() -> dict:
+    return client_summary(store.all())
+
+
+@app.get("/api/reports/export.csv")
+def report_export_csv() -> PlainTextResponse:
+    return PlainTextResponse(
+        invoices_csv(store.all()),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=invoicepilot-books.csv"
+        },
+    )
+
+
+@app.post("/api/paypal/webhook")
+async def paypal_webhook(request: Request) -> dict:
+    """Receive PayPal webhook events (payment captured / order approved).
+
+    When PAYPAL_WEBHOOK_ID is configured with a real sandbox/live
+    client, the delivery's signature is verified with PayPal first and
+    forgeries are rejected. In demo/mock mode there is no signature to
+    verify against — the response says so (``verified: false``) rather
+    than pretending.
+    """
+    try:
+        event = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="invalid JSON body") from None
+    if not isinstance(event, dict):
+        raise HTTPException(status_code=400, detail="webhook body must be an object")
+    verified = False
+    if settings.paypal_webhook_id and isinstance(paypal, SandboxPayPalClient):
+        try:
+            verified = paypal.verify_webhook_signature(
+                dict(request.headers), event, settings.paypal_webhook_id
+            )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"PayPal verification failed: {exc}"
+            ) from exc
+        if not verified:
+            raise HTTPException(
+                status_code=400, detail="webhook signature verification failed"
+            )
+    try:
+        result = webhooks.handle(event)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    result["verified"] = verified
+    return result
 
 
 @app.post("/api/invoices/from-text")

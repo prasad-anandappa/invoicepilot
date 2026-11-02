@@ -120,11 +120,44 @@ class SandboxPayPalClient:
         )
         return self._token
 
-    def _headers(self) -> dict:
-        return {
+    def _headers(self, request_id: str | None = None) -> dict:
+        headers = {
             "Authorization": f"Bearer {self._access_token()}",
             "Content-Type": "application/json",
         }
+        if request_id:
+            # PayPal-Request-Id makes order creation idempotent at the
+            # PayPal layer too: a retried create for the same invoice
+            # returns the original order instead of minting a second one.
+            headers["PayPal-Request-Id"] = request_id
+        return headers
+
+    def verify_webhook_signature(
+        self, headers: dict, event: dict, webhook_id: str
+    ) -> bool:
+        """Ask PayPal to verify a webhook delivery's signature.
+
+        Used by the webhook endpoint when PAYPAL_WEBHOOK_ID is set, so
+        forged deliveries are rejected before they can touch an invoice.
+        """
+        payload = {
+            "transmission_id": headers.get("paypal-transmission-id", ""),
+            "transmission_time": headers.get("paypal-transmission-time", ""),
+            "cert_url": headers.get("paypal-cert-url", ""),
+            "auth_algo": headers.get("paypal-auth-algo", ""),
+            "transmission_sig": headers.get("paypal-transmission-sig", ""),
+            "webhook_id": webhook_id,
+            "webhook_event": event,
+        }
+        resp = httpx.post(
+            f"{self._settings.paypal_base_url}/v1/notifications/"
+            "verify-webhook-signature",
+            headers=self._headers(),
+            json=payload,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        return resp.json().get("verification_status") == "SUCCESS"
 
     def create_order(self, invoice: Invoice) -> PayPalOrder:
         payload = {
@@ -156,7 +189,7 @@ class SandboxPayPalClient:
         }
         resp = httpx.post(
             f"{self._settings.paypal_base_url}/v2/checkout/orders",
-            headers=self._headers(),
+            headers=self._headers(request_id=f"invoicepilot-{invoice.id}"),
             json=payload,
             timeout=30.0,
         )
@@ -187,7 +220,9 @@ class SandboxPayPalClient:
             resp = httpx.post(
                 f"{self._settings.paypal_base_url}/v2/checkout/orders/"
                 f"{order_id}/capture",
-                headers=self._headers(),
+                headers=self._headers(
+                    request_id=f"invoicepilot-capture-{order_id}"
+                ),
                 timeout=30.0,
             )
             resp.raise_for_status()

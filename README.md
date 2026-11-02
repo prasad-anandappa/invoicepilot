@@ -16,8 +16,10 @@ Freelancers lose money twice: once on the work, and again on the admin. Studies 
 2. **The agent understands it** — LLM tool-use when a key is configured, a deterministic rule-based parser otherwise — and drafts a structured invoice (client, amount, tax, due date) with exact Decimal money math.
 3. **The agent creates a PayPal order** (Sandbox Orders v2 API) and sends the buyer a payment link.
 4. **The agent monitors payment status.** When the buyer approves, the agent *captures* the payment itself — approval alone never counts as paid — and marks the invoice PAID only when PayPal reports the capture COMPLETED.
-5. **If the due date passes, the agent sends a polite, context-aware reminder** with the payment link — firm on facts, friendly in tone.
+5. **If the due date passes, the agent sends a polite, context-aware reminder** with the payment link — and the tone **escalates with lateness**: a gentle nudge at 1–7 days overdue, a firm follow-up at 8–30, a final notice at 31+. Always polite, always exact on the facts.
 6. **The agent reconciles**: invoiced vs collected vs outstanding vs overdue, always current.
+7. **PayPal webhooks** let the agent react the second money moves: an order-approved event triggers capture, a capture-completed event confirms PAID — with at-least-once delivery deduplicated by event id, and signature verification when a webhook ID is configured.
+8. **The books are a real reporting surface**: an **AG Grid** dashboard (sort, filter, search, paginate, CSV export) with an aging report (current / 1–7 / 8–30 / 31+ days) and per-client summaries — the same tiers the reminder escalation uses.
 
 ## Architecture
 
@@ -39,9 +41,10 @@ flowchart LR
 | Agent core | Python, explicit tool functions (`create_invoice`, `create_paypal_order`, `check_status`, `send_reminder`, `reconcile`) |
 | Understanding | LLM tool-use behind an interface + deterministic rule-based fallback parser (dates, amounts, tax, "due Friday" → real date) |
 | Payments | PayPal Sandbox REST — OAuth2 client credentials (auto-refreshing token) + Orders v2 (create / capture / get), itemised tax breakdown |
-| Web | FastAPI + one self-contained HTML/CSS/JS page (no build step) |
+| Web | FastAPI + one self-contained HTML/CSS/JS page (no build step) + AG Grid reporting view (CDN, with an offline fallback table) |
+| Reports | Aging buckets, per-client summaries, CSV export — Decimal-exact, computed server-side |
 | Money | `Decimal` everywhere, ROUND_HALF_UP to cents — totals are exact and unit-tested |
-| Tests | pytest — 62 tests: parser + edge cases, money math, payment state machine, API hardening, LLM-output validation, full agent flow over HTTP in mock mode |
+| Tests | pytest — 98 tests: parser + edge cases, money math, payment state machine, API hardening, LLM-output validation, reminder escalation, aging/CSV reports, webhook handling + dedupe, sandbox-client request construction, full agent flow over HTTP in mock mode |
 
 ### Built to be trusted with money
 
@@ -89,6 +92,7 @@ With a key, the LLM extracts invoice fields; on any failure the agent silently f
 2. **Pay** — click **Pay with PayPal** on the invoice card; the (simulated) PayPal checkout opens; click *Pay now*; you're returned with a green "Payment confirmed" banner and the invoice flips to **PAID**.
 3. **Chase** — create *"Birthday cake order for Priya, $85, due yesterday"*: it lands as **OVERDUE**; click **Send reminder** and read the agent's polite nudge, link included.
 4. **Reconcile** — the panel shows $535 invoiced, $450 collected, $85 outstanding/overdue. Click **Reconcile now** for the agent's spoken summary.
+5. **Books** — scroll to the AG Grid reporting view: sort and filter the whole ledger, see the $85 sitting in the 1–7-day aging bucket, and export the books as CSV.
 
 ## API
 
@@ -103,12 +107,16 @@ Both create endpoints accept an optional `Idempotency-Key` header — retrying w
 | `POST /api/invoices/{id}/remind` | Compose + record a reminder |
 | `POST /api/invoices/{id}/simulate-pay` | Mock-mode buyer payment (demo) |
 | `GET /api/reconcile` | Totals + per-invoice breakdown |
-| `GET /api/health` | Mode report (mock vs sandbox, parser in use) |
+| `GET /api/reports/aging` | Outstanding money by lateness bucket (current / 1–7 / 8–30 / 31+) |
+| `GET /api/reports/clients` | Per-client invoiced / collected / outstanding / overdue |
+| `GET /api/reports/export.csv` | The full books as CSV |
+| `POST /api/paypal/webhook` | PayPal events: order approved → capture; capture completed → PAID (deduped; signature-verified when configured) |
+| `GET /api/health` | Mode report (mock vs sandbox, parser in use, feature list) |
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q   # 62 tests, all offline in mock mode
+.venv/bin/python -m pytest -q   # 98 tests, all offline in mock mode
 ```
 
 ## AI tools used
@@ -121,7 +129,9 @@ Both create endpoints accept an optional `Idempotency-Key` header — retrying w
 
 ## Roadmap
 
-Real email/SMS reminder delivery · PayPal Invoicing API + webhooks (instant PAID detection instead of polling) · recurring invoices · multi-currency · persistent database · a "collections tone" setting (gentle → firm escalation ladder).
+Real email/SMS reminder delivery · PayPal Invoicing API for native PayPal invoices · recurring invoices · multi-currency · scheduled autonomous chasing (the agent runs the escalation ladder on a timer, not only on request).
+
+**Done since the first submission:** PayPal webhooks (instant PAID detection alongside polling) · reminder escalation ladder (gentle → firm → final) · AG Grid books & reporting with aging analysis and CSV export · persistent database layer (SQLAlchemy + Alembic migrations, SQLite dev / Postgres production).
 
 ## Author
 
