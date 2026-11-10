@@ -6,6 +6,37 @@ Built for the **PayPal AI Hackathon** (*Build What's Next with PayPal and AI*), 
 
 ---
 
+## ▶ Try the live demo — no signup
+
+**https://tryinvoicepilot.com** — click **“▶ Try the live demo”** on the
+landing or login page. You land in a demo workspace preloaded with a
+story: **$535 invoiced · $450 collected** (Maria Chen, PAID) · **$85
+outstanding** (Priya Sharma, overdue, with a live payment link and a
+reminder already sent). Create an invoice from one sentence, follow
+Priya's payment link to the simulated PayPal checkout and pay it,
+send a reminder, and watch the dashboard reconcile — the workspace
+resets to the story on every demo login, so click anything.
+
+The hosted demo runs the deterministic mock PayPal client, which
+mirrors the real Orders v2 lifecycle (CREATED → APPROVED → captured →
+COMPLETED). The same code has also run against the **real PayPal
+Sandbox**: a $125.00 payment, order `1B345558HU838203W`, capture
+`9F334151MX513935W`, signature-verified webhooks with duplicates
+ignored — full evidence in **[docs/sandbox-evidence.md](docs/sandbox-evidence.md)**.
+
+**What the AI does — and what it doesn't.** The agent's first step is
+language: turning a messy note into a structured invoice. With an LLM
+API key configured, a model does that extraction; without one, a
+deterministic rule-based parser handles the same job and says so.
+Everything after that step is deliberately *not* left to a model:
+money math is Decimal-exact, the PayPal lifecycle is an explicit
+state machine, reminder wording follows a fixed escalation ladder,
+and every capture is verified against PayPal before an invoice may
+be called PAID. The AI reads the note; the engineering guards the
+money.
+
+---
+
 ## The problem
 
 Freelancers lose money twice: once on the work, and again on the admin. Studies of freelance work routinely find that a large share of invoices are paid late — and many are simply forgotten by the person who sent them. Writing the invoice, generating a payment link, checking whether it was paid, and sending the *"just checking in…"* email is exactly the kind of multi-step, tool-spanning busywork an agent should own.
