@@ -24,16 +24,7 @@ Sandbox**: a $125.00 payment, order `1B345558HU838203W`, capture
 `9F334151MX513935W`, signature-verified webhooks with duplicates
 ignored — full evidence in **[docs/sandbox-evidence.md](docs/sandbox-evidence.md)**.
 
-**What the AI does — and what it doesn't.** The agent's first step is
-language: turning a messy note into a structured invoice. With an LLM
-API key configured, a model does that extraction; without one, a
-deterministic rule-based parser handles the same job and says so.
-Everything after that step is deliberately *not* left to a model:
-money math is Decimal-exact, the PayPal lifecycle is an explicit
-state machine, reminder wording follows a fixed escalation ladder,
-and every capture is verified against PayPal before an invoice may
-be called PAID. The AI reads the note; the engineering guards the
-money.
+**The AI runs inside the app — live.** The agent's first step is language: turning a messy note into a structured invoice. In the hosted demo (and in any deployment with `INVOICEPILOT_LLM_API_KEY` set) that extraction is done by a live LLM — Qwen2.5-14B served via vLLM through an OpenAI-compatible chat API — called by the app at invoice-creation time (see `app/llm.py`); the agent's activity feed shows the step "Understood the job via llm", and `GET /api/health` reports `"llm":"api"`. A deterministic rule-based parser remains only as an offline fallback, and every LLM extraction is field-validated before it can become an invoice. Everything after that step is deliberately *not* left to a model: money math is Decimal-exact, the PayPal lifecycle is an explicit state machine, reminder wording follows a fixed escalation ladder, and every capture is verified against PayPal before an invoice may be called PAID. The AI reads the note; the engineering guards the money.
 
 ---
 
@@ -44,7 +35,7 @@ Freelancers lose money twice: once on the work, and again on the admin. Studies 
 ## What InvoicePilot does
 
 1. **You say the job out loud.** *"Logo design for Maria's bakery, $450, due Friday."*
-2. **The agent understands it** — LLM tool-use when a key is configured, a deterministic rule-based parser otherwise — and drafts a structured invoice (client, amount, tax, due date) with exact Decimal money math.
+2. **The agent understands it** — a live LLM (the hosted demo runs a Qwen2.5-14B model via vLLM; any OpenAI-compatible endpoint works), with a deterministic rule-based parser as offline fallback — and drafts a structured invoice (client, amount, tax, due date) with exact Decimal money math.
 3. **The agent creates a PayPal order** (Sandbox Orders v2 API) and sends the buyer a payment link.
 4. **The agent monitors payment status.** When the buyer approves, the agent *captures* the payment itself — approval alone never counts as paid — and marks the invoice PAID only when PayPal reports the capture COMPLETED.
 5. **If the due date passes, the agent sends a polite, context-aware reminder** with the payment link — and the tone **escalates with lateness**: a gentle nudge at 1–7 days overdue, a firm follow-up at 8–30, a final notice at 31+. Always polite, always exact on the facts.
@@ -109,13 +100,13 @@ export PAYPAL_MODE=sandbox
 
 Restart — the same agent now creates real sandbox orders and returns genuine PayPal approve links. **No code changes.**
 
-### Optional: LLM parsing
+### LLM parsing
 
 ```bash
 export INVOICEPILOT_LLM_API_KEY="..."   # any OpenAI-compatible endpoint
 ```
 
-With a key, the LLM extracts invoice fields; on any failure the agent silently falls back to the built-in parser. The demo never depends on it.
+With a key set, the LLM extracts invoice fields; on any failure the agent falls back to the built-in parser. The hosted demo at tryinvoicepilot.com runs with the LLM switched on — its health endpoint reports `"llm":"api"`. Without a key, a local clone still runs with zero credentials on the built-in parser.
 
 ## Demo walkthrough (2 minutes)
 
@@ -152,7 +143,7 @@ Both create endpoints accept an optional `Idempotency-Key` header — retrying w
 
 ## AI tools used
 
-- LLM tool-use interface for natural-language invoice extraction (OpenAI-compatible chat API, optional at runtime)
+- A live LLM for natural-language invoice extraction (Qwen2.5-14B via vLLM, OpenAI-compatible chat API), called by the app at invoice-creation time; LLM output is field-validated before use
 - Deterministic rule-based NLP parser (regex + calendar logic) as the always-available fallback
 - PayPal Sandbox REST APIs (Orders v2, OAuth2)
 - FastAPI, Pydantic, httpx, pytest
